@@ -118,8 +118,9 @@ LR         = 1e-3       # 学習率
 WEIGHT_DECAY = 1e-5     # 重み減衰
 
 # 可視化設定
-ENABLE_PLOT = True      # 学習曲線をプロットするか
-PLOT_INTERVAL = 50      # プロット更新の間隔（エポック数）
+ENABLE_PLOT = True                  # 学習曲線をプロットするか
+ENABLE_REALTIME_PLOT = True        # リアルタイム表示（GUI）を有効にするか
+PLOT_INTERVAL = 50                  # プロット更新の間隔（エポック数）
 SAVE_PLOT_PATH = "./training_history.png"  # プロット保存先
 
 # 損失関数の重み（両方とも相対誤差なので同じスケール）
@@ -447,19 +448,83 @@ ALPHA_QUAL = 4.0
 
 ### 学習曲線のプロット
 
-`ENABLE_PLOT = True` に設定すると、学習中に自動的に学習曲線がプロットされます：
+学習の進捗をリアルタイムで確認できる可視化機能があります。
+
+#### 設定方法
 
 ```python
-ENABLE_PLOT = True       # 学習曲線をプロットするか
-PLOT_INTERVAL = 50       # プロット更新の間隔（エポック数）
+# 基本設定
+ENABLE_PLOT = True                  # 学習曲線をプロットするか
+ENABLE_REALTIME_PLOT = True        # リアルタイム表示（GUI）を有効にするか
+PLOT_INTERVAL = 50                  # プロット更新の間隔（エポック数）
 SAVE_PLOT_PATH = "./training_history.png"  # プロット保存先
 ```
 
-プロットには以下が含まれます：
-- **Total Loss**: 総合損失の推移
-- **Data Loss vs PDE Loss**: 各損失成分の推移
-- **Relative Error**: 圧力予測誤差 `||x_pred - x_true|| / ||x_true||`
-- **PDE Residual**: PDE相対残差 `||A·x_pred - b|| / ||b||`
+#### リアルタイム表示モード（推奨）
+
+`ENABLE_REALTIME_PLOT = True` に設定すると、**学習中にGUIウィンドウが開き**、リアルタイムで学習曲線が更新されます。
+
+**特徴:**
+- 50エポックごとに自動更新
+- 学習の進捗を視覚的に確認できる
+- 早期に問題を発見可能（過学習、振動など）
+- ファイルにも同時に保存される
+
+**注意:**
+- GUI環境が必要（サーバー環境では使用不可）
+- GUIが使えない場合、自動的にファイル保存のみに切り替わります
+
+#### ファイル保存のみモード
+
+`ENABLE_REALTIME_PLOT = False` に設定すると、GUIを開かずにファイルのみに保存します。
+
+**使用ケース:**
+- サーバー環境（SSH経由など）
+- GUI不要の場合
+- バッチ処理
+
+#### プロット内容
+
+4つのサブプロットを含む画像ファイル：
+
+1. **Total Loss**: 総合損失の推移
+   - 全体的な学習の進捗を確認
+
+2. **Data Loss vs PDE Loss**: 各損失成分の推移
+   - データ損失（赤）とPDE損失（緑）のバランスを確認
+   - どちらが支配的かを診断
+
+3. **Relative Error**: 圧力予測誤差 `||x_pred - x_true|| / ||x_true||`
+   - **最も重要な指標**：圧力の真値と予測値のずれ
+   - この値が小さいほど精度が高い
+
+4. **PDE Residual**: PDE相対残差 `||A·x_pred - b|| / ||b||`
+   - 物理方程式の満足度
+   - この値が小さいほど物理的に正しい
+
+#### 使用例
+
+```python
+# 例1: リアルタイム表示で学習
+ENABLE_PLOT = True
+ENABLE_REALTIME_PLOT = True
+PLOT_INTERVAL = 50
+
+# 例2: サーバー環境（ファイル保存のみ）
+ENABLE_PLOT = True
+ENABLE_REALTIME_PLOT = False
+PLOT_INTERVAL = 100
+
+# 例3: 可視化を無効化（高速化）
+ENABLE_PLOT = False
+```
+
+#### リアルタイム表示の終了
+
+学習が完了すると、GUIウィンドウは表示されたままになります：
+
+- **ウィンドウを閉じる**: ×ボタンをクリック
+- **プログラムを終了**: `Ctrl+C`
 
 ## 技術的な詳細
 
