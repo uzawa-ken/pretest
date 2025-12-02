@@ -22,6 +22,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+from matplotlib import use as mpl_use
+mpl_use('Agg')  # バックエンドを設定（GUI不要）
 
 try:
     from torch_geometric.nn import SAGEConv
@@ -42,6 +45,11 @@ RANK_STR   = "0"
 NUM_EPOCHS = 1000
 LR         = 1e-3
 WEIGHT_DECAY = 1e-5
+
+# 可視化設定
+ENABLE_PLOT = True       # 学習曲線をプロットするか
+PLOT_INTERVAL = 50       # プロット更新の間隔（エポック数）
+SAVE_PLOT_PATH = "./training_history.png"  # プロット保存先
 
 # 損失関数の重み（両方とも相対誤差なので同じスケール）
 LAMBDA_DATA = 1.0    # データ損失の重み ||x_pred - x_true||² / ||x_true||²
@@ -369,6 +377,70 @@ def compute_pde_loss(case, x_pred, use_mesh_quality_weight=False, eps=1e-12):
 
 
 # ------------------------------------------------------------
+# 学習曲線のプロット
+# ------------------------------------------------------------
+
+def plot_training_history(history, save_path):
+    """学習履歴をプロットして保存する。
+
+    Args:
+        history: {
+            'epoch': [...],
+            'loss': [...],
+            'data_loss': [...],
+            'pde_loss': [...],
+            'rel_err': [...],
+            'R_pred': [...]
+        }
+        save_path: 保存先のパス
+    """
+    epochs = history['epoch']
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Training History', fontsize=16, fontweight='bold')
+
+    # 1. 総合損失
+    axes[0, 0].plot(epochs, history['loss'], 'b-', linewidth=2, label='Total Loss')
+    axes[0, 0].set_xlabel('Epoch', fontsize=12)
+    axes[0, 0].set_ylabel('Loss', fontsize=12)
+    axes[0, 0].set_title('Total Loss', fontsize=14)
+    axes[0, 0].grid(True, alpha=0.3)
+    axes[0, 0].legend()
+
+    # 2. データ損失 vs PDE損失
+    axes[0, 1].plot(epochs, history['data_loss'], 'r-', linewidth=2, label='Data Loss')
+    axes[0, 1].plot(epochs, history['pde_loss'], 'g-', linewidth=2, label='PDE Loss')
+    axes[0, 1].set_xlabel('Epoch', fontsize=12)
+    axes[0, 1].set_ylabel('Loss', fontsize=12)
+    axes[0, 1].set_title('Data Loss vs PDE Loss', fontsize=14)
+    axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].legend()
+
+    # 3. 相対誤差（圧力予測誤差）
+    axes[1, 0].plot(epochs, history['rel_err'], 'm-', linewidth=2, label='Relative Error')
+    axes[1, 0].set_xlabel('Epoch', fontsize=12)
+    axes[1, 0].set_ylabel('Relative Error', fontsize=12)
+    axes[1, 0].set_title('Pressure Prediction Error: ||x_pred - x_true|| / ||x_true||', fontsize=14)
+    axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].legend()
+    axes[1, 0].set_ylim(bottom=0)
+
+    # 4. PDE相対残差
+    axes[1, 1].plot(epochs, history['R_pred'], 'c-', linewidth=2, label='PDE Residual')
+    axes[1, 1].set_xlabel('Epoch', fontsize=12)
+    axes[1, 1].set_ylabel('Relative Residual', fontsize=12)
+    axes[1, 1].set_title('PDE Residual: ||A·x_pred - b|| / ||b||', fontsize=14)
+    axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].legend()
+    axes[1, 1].set_ylim(bottom=0)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"[INFO] 学習曲線を {save_path} に保存しました。")
+    plt.close()
+
+
+# ------------------------------------------------------------
 # メイン: 5 ケース + 相対誤差ベースの data loss + PDE loss
 # ------------------------------------------------------------
 
@@ -480,6 +552,16 @@ def train_gnn_5cases_relative_loss(data_dir: str):
     loss_type = "with mesh quality weight" if USE_MESH_QUALITY_WEIGHT else "relative error"
     print(f"=== Training start (data loss + PDE loss [{loss_type}], 5 cases) ===")
 
+    # ---------- 学習履歴の初期化 ----------
+    history = {
+        'epoch': [],
+        'loss': [],
+        'data_loss': [],
+        'pde_loss': [],
+        'rel_err': [],
+        'R_pred': []
+    }
+
     # ---------- 学習ループ ----------
     for epoch in range(1, NUM_EPOCHS + 1):
         model.train()
@@ -526,15 +608,28 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         loss.backward()
         optimizer.step()
 
+        # 履歴を記録
+        avg_rel_err = sum_rel_err / num_cases
+        avg_R_pred  = sum_R_pred / num_cases
+
+        history['epoch'].append(epoch)
+        history['loss'].append(loss.item())
+        history['data_loss'].append((LAMBDA_DATA * total_data_loss).item())
+        history['pde_loss'].append((LAMBDA_PDE * total_pde_loss).item())
+        history['rel_err'].append(avg_rel_err)
+        history['R_pred'].append(avg_R_pred)
+
         if epoch % 50 == 0 or epoch == 1:
-            avg_rel_err = sum_rel_err / num_cases
-            avg_R_pred  = sum_R_pred / num_cases
             print(
                 f"[Epoch {epoch:5d}] loss={loss.item():.4e}, "
                 f"data_loss={LAMBDA_DATA * total_data_loss:.4e}, "
                 f"PDE_loss={LAMBDA_PDE * total_pde_loss:.4e}, "
                 f"rel_err(avg)={avg_rel_err:.4e}, R_pred(avg)={avg_R_pred:.4e}"
             )
+
+        # プロットを更新
+        if ENABLE_PLOT and (epoch % PLOT_INTERVAL == 0 or epoch == NUM_EPOCHS):
+            plot_training_history(history, SAVE_PLOT_PATH)
 
     # ---------- 最終評価 & x_pred 書き出し ----------
     print(f"\n=== Final diagnostics per case (GNN, relative error loss [{loss_type}]) ===")
