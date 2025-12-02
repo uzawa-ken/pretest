@@ -42,7 +42,7 @@ except ImportError:
 DATA_DIR   = "./gnn"  # pEqn_*, x_*, A_csr_* があるディレクトリ
 TIME_LIST  = ["10200", "10400", "10600", "10800", "11000"]
 RANK_STR   = "0"
-NUM_EPOCHS = 100  # 診断のため一時的に短縮
+NUM_EPOCHS = 1000
 LR         = 1e-3
 WEIGHT_DECAY = 1e-5
 
@@ -390,13 +390,14 @@ def plot_training_history(history, save_path):
             'data_loss': [...],
             'pde_loss': [...],
             'rel_err': [...],
-            'R_pred': [...]
+            'R_pred': [...],
+            'rmse': [...]
         }
         save_path: 保存先のパス
     """
     epochs = history['epoch']
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle('Training History', fontsize=16, fontweight='bold')
 
     # 1. 総合損失
@@ -417,15 +418,25 @@ def plot_training_history(history, save_path):
     axes[0, 1].legend()
 
     # 3. 相対誤差（圧力予測誤差）
-    axes[1, 0].plot(epochs, history['rel_err'], 'm-', linewidth=2, label='Relative Error')
+    axes[0, 2].plot(epochs, history['rel_err'], 'm-', linewidth=2, label='Relative Error')
+    axes[0, 2].set_xlabel('Epoch', fontsize=12)
+    axes[0, 2].set_ylabel('Relative Error', fontsize=12)
+    axes[0, 2].set_title('Relative Error: ||x_pred - x_true|| / ||x_true||', fontsize=14)
+    axes[0, 2].grid(True, alpha=0.3)
+    axes[0, 2].legend()
+    axes[0, 2].set_ylim(bottom=0)
+
+    # 4. RMSE（二乗平均平方根誤差）
+    axes[1, 0].plot(epochs, history['rmse'], 'orange', linewidth=2, label='RMSE')
     axes[1, 0].set_xlabel('Epoch', fontsize=12)
-    axes[1, 0].set_ylabel('Relative Error', fontsize=12)
-    axes[1, 0].set_title('Pressure Prediction Error: ||x_pred - x_true|| / ||x_true||', fontsize=14)
+    axes[1, 0].set_ylabel('RMSE', fontsize=12)
+    axes[1, 0].set_title('RMSE: sqrt(||x_pred - x_true||² / N)', fontsize=14)
     axes[1, 0].grid(True, alpha=0.3)
     axes[1, 0].legend()
     axes[1, 0].set_ylim(bottom=0)
+    axes[1, 0].ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
 
-    # 4. PDE相対残差
+    # 5. PDE相対残差
     axes[1, 1].plot(epochs, history['R_pred'], 'c-', linewidth=2, label='PDE Residual')
     axes[1, 1].set_xlabel('Epoch', fontsize=12)
     axes[1, 1].set_ylabel('Relative Residual', fontsize=12)
@@ -433,6 +444,9 @@ def plot_training_history(history, save_path):
     axes[1, 1].grid(True, alpha=0.3)
     axes[1, 1].legend()
     axes[1, 1].set_ylim(bottom=0)
+
+    # 6. 空き（将来の拡張用）
+    axes[1, 2].axis('off')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -558,7 +572,8 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         'data_loss': [],
         'pde_loss': [],
         'rel_err': [],
-        'R_pred': []
+        'R_pred': [],
+        'rmse': []  # RMSE: sqrt(||x_pred - x_true||^2 / N)
     }
 
     # ---------- 学習ループ ----------
@@ -570,6 +585,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         total_pde_loss  = 0.0
         sum_rel_err     = 0.0
         sum_R_pred      = 0.0
+        sum_rmse        = 0.0
 
         for cs in cases:
             feats       = cs["feats"]
@@ -596,9 +612,18 @@ def train_gnn_5cases_relative_loss(data_dir: str):
 
             # 評価用 (勾配に影響しないよう detach)
             with torch.no_grad():
-                rel_err_case = torch.norm(x_pred.detach() - x_true) / (torch.norm(x_true) + 1e-12)
+                diff_detach = x_pred.detach() - x_true
+                N = x_true.shape[0]
+
+                # 相対誤差: ||x_pred - x_true|| / ||x_true||
+                rel_err_case = torch.norm(diff_detach) / (torch.norm(x_true) + 1e-12)
+
+                # RMSE: sqrt(||x_pred - x_true||^2 / N)
+                rmse_case = torch.sqrt(torch.sum(diff_detach * diff_detach) / N)
+
                 sum_rel_err += rel_err_case.item()
                 sum_R_pred  += R_pred_case.detach().item()
+                sum_rmse    += rmse_case.item()
 
         total_data_loss = total_data_loss / num_cases
         total_pde_loss  = total_pde_loss  / num_cases
@@ -610,6 +635,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         # 履歴を記録
         avg_rel_err = sum_rel_err / num_cases
         avg_R_pred  = sum_R_pred / num_cases
+        avg_rmse    = sum_rmse / num_cases
 
         history['epoch'].append(epoch)
         history['loss'].append(loss.item())
@@ -617,13 +643,16 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         history['pde_loss'].append((LAMBDA_PDE * total_pde_loss).item())
         history['rel_err'].append(avg_rel_err)
         history['R_pred'].append(avg_R_pred)
+        history['rmse'].append(avg_rmse)
 
         if epoch % 50 == 0 or epoch == 1:
             print(
                 f"[Epoch {epoch:5d}] loss={loss.item():.4e}, "
                 f"data_loss={LAMBDA_DATA * total_data_loss:.4e}, "
                 f"PDE_loss={LAMBDA_PDE * total_pde_loss:.4e}, "
-                f"rel_err(avg)={avg_rel_err:.4e}, R_pred(avg)={avg_R_pred:.4e}"
+                f"rel_err(avg)={avg_rel_err:.4e}, "
+                f"RMSE(avg)={avg_rmse:.4e}, "
+                f"R_pred(avg)={avg_R_pred:.4e}"
             )
 
             # 診断情報（最初と50エポック目のみ）
@@ -669,8 +698,15 @@ def train_gnn_5cases_relative_loss(data_dir: str):
             x_pred_norm = model(feats, edge_index)
             x_pred = x_pred_norm * x_std_t + x_mean_t
             diff = x_pred - x_true
+            N = x_true.shape[0]
+
+            # 相対誤差
             rel_err = torch.norm(diff) / (torch.norm(x_true) + 1e-12)
 
+            # RMSE
+            rmse = torch.sqrt(torch.sum(diff * diff) / N)
+
+            # PDE残差
             Ax = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_pred)
             r  = Ax - b
             norm_r = torch.norm(r)
@@ -680,6 +716,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         print(
             f"  Case (time={time_str}, rank={RANK_STR}): "
             f"rel_err = {rel_err.item():.4e}, "
+            f"RMSE = {rmse.item():.4e}, "
             f"R_pred = {R_pred.item():.4e}"
         )
 
