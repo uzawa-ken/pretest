@@ -58,6 +58,9 @@ LAMBDA_PDE  = 1.0    # PDE損失の重み ||A·x_pred - b||² / ||b||²
 # メッシュ品質重み付けを使用するかどうか
 USE_MESH_QUALITY_WEIGHT = False  # True: 品質の悪いセルを重視, False: 全セル均等
 
+EPS_QUAL   = 1e-12
+EPS_RES    = 1e-12  # 残差の正規化用 eps
+
 # ------------------------------------------------------------
 # メッシュ品質ベース PDE 重み付けの設定
 # feats の列インデックスは load_case_with_csr 内の定義に対応
@@ -680,54 +683,81 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         if ENABLE_PLOT and (epoch % PLOT_INTERVAL == 0 or epoch == NUM_EPOCHS):
             plot_training_history(history, SAVE_PLOT_PATH)
 
-    # ---------- 最終評価 & x_pred 書き出し ----------
-    print(f"\n=== Final diagnostics per case (GNN, relative error loss [{loss_type}]) ===")
-    model.eval()
-    for cs in cases:
-        time_str   = cs["time"]
-        feats      = cs["feats"]
-        edge_index = cs["edge_index"]
-        x_true     = cs["x_true"]
-        b          = cs["b"]
-        row_ptr    = cs["row_ptr"]
-        col_ind    = cs["col_ind"]
-        vals       = cs["vals"]
-        row_idx    = cs["row_idx"]
+        # ---------- 最終評価 & x_pred 書き出し ----------
+        print(f"\n=== Final diagnostics per case (GNN, relative error loss [{loss_type}]) ===")
+        model.eval()
+        for cs in cases:
+            time_str   = cs["time"]
+            feats      = cs["feats"]
+            edge_index = cs["edge_index"]
+            x_true     = cs["x_true"]
+            b          = cs["b"]
+            row_ptr    = cs["row_ptr"]
+            col_ind    = cs["col_ind"]
+            vals       = cs["vals"]
+            row_idx    = cs["row_idx"]
 
-        with torch.no_grad():
-            x_pred_norm = model(feats, edge_index)
-            x_pred = x_pred_norm * x_std_t + x_mean_t
-            diff = x_pred - x_true
-            N = x_true.shape[0]
+            with torch.no_grad():
+                # --- GNN 予測 ---
+                x_pred_norm = model(feats, edge_index)
+                x_pred = x_pred_norm * x_std_t + x_mean_t  # 物理空間に戻す
+                diff = x_pred - x_true
+                N = x_true.shape[0]
+    
+                # 相対誤差 (GNN vs OpenFOAM 解)
+                rel_err = torch.norm(diff) / (torch.norm(x_true) + EPS_RES)
+    
+                # RMSE
+                rmse = torch.sqrt(torch.sum(diff * diff) / N)
+    
+                # ---------- PDE 残差 (GNN 解 x_pred) ----------
+                Ax_pred = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_pred)
+                r_pred  = Ax_pred - b
+    
+                norm_r_pred     = torch.norm(r_pred)                    # ||r||_2
+                max_abs_r_pred  = torch.max(torch.abs(r_pred))          # max|r_i|
+                norm_b          = torch.norm(b)                         # ||b||
+                norm_Ax_pred    = torch.norm(Ax_pred)                   # ||Ax||
+    
+                R_pred_over_b   = norm_r_pred / (norm_b + EPS_RES)      # ||r||/||b||
+                R_pred_over_Ax  = norm_r_pred / (norm_Ax_pred + EPS_RES)  # ||r||/||Ax||
+    
+                # ---------- PDE 残差 (OpenFOAM 解 x_true) ----------
+                Ax_true = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_true)
+                r_true  = Ax_true - b
+    
+                norm_r_true     = torch.norm(r_true)                    # ||r||_2
+                max_abs_r_true  = torch.max(torch.abs(r_true))          # max|r_i|
+                norm_Ax_true    = torch.norm(Ax_true)                   # ||Ax||    
 
-            # 相対誤差
-            rel_err = torch.norm(diff) / (torch.norm(x_true) + 1e-12)
+                R_true_over_b   = norm_r_true / (norm_b + EPS_RES)      # ||r||/||b||
+                R_true_over_Ax  = norm_r_true / (norm_Ax_true + EPS_RES)  # ||r||/||Ax||
 
-            # RMSE
-            rmse = torch.sqrt(torch.sum(diff * diff) / N)
+            # --- 結果出力 ---
+            print(f"  Case (time={time_str}, rank={RANK_STR}):")
+            print(f"    [GNN] rel_err = {rel_err.item():.4e}, RMSE = {rmse.item():.4e}")
+            print(
+                "          pEqn true(Ax-b) via residual() (GNN): "
+                f"||r||_2={norm_r_pred.item():.6e}, "
+                f"max|r_i|={max_abs_r_pred.item():.6e}, "
+                f"||r||/||b||={R_pred_over_b.item():.5f}, "
+                f"||r||/||Ax||={R_pred_over_Ax.item():.5f}"
+            )
+            print(
+                "    [OpenFOAM x_true] pEqn true(Ax-b) via residual(): "
+                f"||r||_2={norm_r_true.item():.6e}, "
+                f"max|r_i|={max_abs_r_true.item():.6e}, "
+                f"||r||/||b||={R_true_over_b.item():.5f}, "
+                f"||r||/||Ax||={R_true_over_Ax.item():.5f}"
+            )
 
-            # PDE残差
-            Ax = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_pred)
-            r  = Ax - b
-            norm_r = torch.norm(r)
-            norm_b = torch.norm(b) + 1e-12
-            R_pred = norm_r / norm_b
-
-        print(
-            f"  Case (time={time_str}, rank={RANK_STR}): "
-            f"rel_err = {rel_err.item():.4e}, "
-            f"RMSE = {rmse.item():.4e}, "
-            f"R_pred = {R_pred.item():.4e}"
-        )
-
-        # x_pred をファイル出力
-        x_pred_np = x_pred.cpu().numpy().reshape(-1)
-        out_path = os.path.join(DATA_DIR, f"x_pred_{time_str}_rank{RANK_STR}.dat")
-        with open(out_path, "w") as f:
-            for i, val in enumerate(x_pred_np):
-                f.write(f"{i} {val:.9e}\n")
-        print(f"    [INFO] x_pred を {out_path} に書き出しました。")
-
+            # x_pred をファイル出力
+            x_pred_np = x_pred.cpu().numpy().reshape(-1)
+            out_path = os.path.join(DATA_DIR, f"x_pred_{time_str}_rank{RANK_STR}.dat")
+            with open(out_path, "w") as f:
+                for i, val in enumerate(x_pred_np):
+                    f.write(f"{i} {val:.9e}\n")
+            print(f"    [INFO] x_pred を {out_path} に書き出しました。")
 
 if __name__ == "__main__":
     train_gnn_5cases_relative_loss(DATA_DIR)
