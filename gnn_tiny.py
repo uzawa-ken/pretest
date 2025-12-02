@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib
+matplotlib.use('Agg')  # GUIなしのバックエンド
 import matplotlib.pyplot as plt
 
 try:
@@ -46,9 +47,8 @@ LR         = 1e-3
 WEIGHT_DECAY = 1e-5
 
 # 可視化設定
-ENABLE_PLOT = True                  # 学習曲線をプロットするか
-ENABLE_REALTIME_PLOT = True        # リアルタイム表示（GUI）を有効にするか
-PLOT_INTERVAL = 50                  # プロット更新の間隔（エポック数）
+ENABLE_PLOT = True       # 学習曲線をプロットするか
+PLOT_INTERVAL = 50       # プロット更新の間隔（エポック数）
 SAVE_PLOT_PATH = "./training_history.png"  # プロット保存先
 
 # 損失関数の重み（両方とも相対誤差なので同じスケール）
@@ -380,7 +380,7 @@ def compute_pde_loss(case, x_pred, use_mesh_quality_weight=False, eps=1e-12):
 # 学習曲線のプロット
 # ------------------------------------------------------------
 
-def plot_training_history(history, save_path, fig=None, axes=None, realtime=False):
+def plot_training_history(history, save_path):
     """学習履歴をプロットして保存する。
 
     Args:
@@ -393,24 +393,11 @@ def plot_training_history(history, save_path, fig=None, axes=None, realtime=Fals
             'R_pred': [...]
         }
         save_path: 保存先のパス
-        fig: 既存のfigureオブジェクト（リアルタイム更新用）
-        axes: 既存のaxesオブジェクト（リアルタイム更新用）
-        realtime: リアルタイム表示モード
-
-    Returns:
-        fig, axes: リアルタイム表示の場合に返す
     """
     epochs = history['epoch']
 
-    # 新規作成または既存のfigureを使用
-    if fig is None or axes is None:
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle('Training History (Real-time)' if realtime else 'Training History',
-                     fontsize=16, fontweight='bold')
-    else:
-        # 既存のaxesをクリア
-        for ax in axes.flat:
-            ax.clear()
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Training History', fontsize=16, fontweight='bold')
 
     # 1. 総合損失
     axes[0, 0].plot(epochs, history['loss'], 'b-', linewidth=2, label='Total Loss')
@@ -448,18 +435,8 @@ def plot_training_history(history, save_path, fig=None, axes=None, realtime=Fals
     axes[1, 1].set_ylim(bottom=0)
 
     plt.tight_layout()
-
-    # ファイルに保存
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
-
-    if realtime:
-        # リアルタイム表示モード：画面を更新
-        plt.pause(0.01)  # 短い待機で画面を更新
-        return fig, axes
-    else:
-        # 非リアルタイムモード：閉じる
-        plt.close()
-        return None, None
+    plt.close()
 
 
 # ------------------------------------------------------------
@@ -584,52 +561,6 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         'R_pred': []
     }
 
-    # ---------- リアルタイム表示の初期化 ----------
-    fig_rt = None
-    axes_rt = None
-    realtime_plot = ENABLE_REALTIME_PLOT  # ローカル変数にコピー
-
-    if ENABLE_PLOT and realtime_plot:
-        # 複数のバックエンドを試す
-        backends_to_try = [
-            ('TkAgg', 'Tkinter GUI'),
-            ('Qt5Agg', 'Qt5 GUI'),
-            ('WebAgg', 'ブラウザ'),
-            ('GTK3Agg', 'GTK3 GUI'),
-        ]
-
-        backend_initialized = False
-        for backend_name, description in backends_to_try:
-            try:
-                matplotlib.use(backend_name)
-                plt.ion()  # インタラクティブモードON
-
-                # テスト用に小さなfigureを作成してみる
-                test_fig = plt.figure()
-                plt.close(test_fig)
-
-                print(f"[INFO] リアルタイム可視化を有効にしました（{description}を使用）")
-                if backend_name == 'WebAgg':
-                    print("[INFO] ブラウザで表示されます。URLが表示されたらブラウザでアクセスしてください。")
-                    print("[INFO] SSH経由の場合: ssh -L 8988:localhost:8988 user@host でポートフォワーディングしてください")
-                backend_initialized = True
-                break
-            except Exception as e:
-                # このバックエンドは使えないので次を試す
-                continue
-
-        if not backend_initialized:
-            print(f"[WARNING] リアルタイム表示を初期化できませんでした")
-            print("[INFO] 以下のいずれかをインストールすると、リアルタイム表示が可能になります:")
-            print("  - sudo apt-get install python3-tk  (Tkinter)")
-            print("  - pip install PyQt5  (Qt5)")
-            print("[INFO] ファイル保存のみで続行します")
-            realtime_plot = False
-            matplotlib.use('Agg')
-    elif not realtime_plot:
-        # 非インタラクティブバックエンド
-        matplotlib.use('Agg')
-
     # ---------- 学習ループ ----------
     for epoch in range(1, NUM_EPOCHS + 1):
         model.train()
@@ -697,15 +628,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
 
         # プロットを更新
         if ENABLE_PLOT and (epoch % PLOT_INTERVAL == 0 or epoch == NUM_EPOCHS):
-            if realtime_plot:
-                # リアルタイム表示モード
-                fig_rt, axes_rt = plot_training_history(
-                    history, SAVE_PLOT_PATH,
-                    fig=fig_rt, axes=axes_rt, realtime=True
-                )
-            else:
-                # ファイル保存のみ
-                plot_training_history(history, SAVE_PLOT_PATH, realtime=False)
+            plot_training_history(history, SAVE_PLOT_PATH)
 
     # ---------- 最終評価 & x_pred 書き出し ----------
     print(f"\n=== Final diagnostics per case (GNN, relative error loss [{loss_type}]) ===")
@@ -746,17 +669,6 @@ def train_gnn_5cases_relative_loss(data_dir: str):
             for i, val in enumerate(x_pred_np):
                 f.write(f"{i} {val:.9e}\n")
         print(f"    [INFO] x_pred を {out_path} に書き出しました。")
-
-    # ---------- リアルタイム表示の終了処理 ----------
-    if ENABLE_PLOT and realtime_plot:
-        print("\n[INFO] 学習完了。GUIウィンドウを閉じるには、ウィンドウの×ボタンを押してください。")
-        print("[INFO] または、Ctrl+Cで終了してください。")
-        try:
-            plt.ioff()  # インタラクティブモードOFF
-            plt.show()  # ウィンドウを表示したまま待機
-        except KeyboardInterrupt:
-            print("\n[INFO] ユーザーによって終了されました。")
-            plt.close('all')
 
 
 if __name__ == "__main__":
