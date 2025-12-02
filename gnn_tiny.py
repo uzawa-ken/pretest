@@ -42,7 +42,7 @@ except ImportError:
 DATA_DIR   = "./gnn"  # pEqn_*, x_*, A_csr_* があるディレクトリ
 TIME_LIST  = ["10200", "10400", "10600", "10800", "11000"]
 RANK_STR   = "0"
-NUM_EPOCHS = 1000
+NUM_EPOCHS = 100  # 診断のため一時的に短縮
 LR         = 1e-3
 WEIGHT_DECAY = 1e-5
 
@@ -625,6 +625,27 @@ def train_gnn_5cases_relative_loss(data_dir: str):
                 f"PDE_loss={LAMBDA_PDE * total_pde_loss:.4e}, "
                 f"rel_err(avg)={avg_rel_err:.4e}, R_pred(avg)={avg_R_pred:.4e}"
             )
+
+            # 診断情報（最初と50エポック目のみ）
+            if epoch == 1 or epoch == 50:
+                with torch.no_grad():
+                    cs = cases[0]  # 最初のケースで診断
+                    feats = cs["feats"]
+                    edge_index = cs["edge_index"]
+                    x_true = cs["x_true"]
+
+                    x_pred_norm = model(feats, edge_index)
+                    x_pred = x_pred_norm * x_std_t + x_mean_t
+
+                    print(f"  [診断 Epoch {epoch}]")
+                    print(f"    x_true: min={x_true.min().item():.6e}, max={x_true.max().item():.6e}, "
+                          f"mean={x_true.mean().item():.6e}, norm={torch.norm(x_true).item():.6e}")
+                    print(f"    x_pred: min={x_pred.min().item():.6e}, max={x_pred.max().item():.6e}, "
+                          f"mean={x_pred.mean().item():.6e}, norm={torch.norm(x_pred).item():.6e}")
+                    print(f"    x_pred_norm: min={x_pred_norm.min().item():.6e}, max={x_pred_norm.max().item():.6e}, "
+                          f"mean={x_pred_norm.mean().item():.6e}")
+                    print(f"    diff (x_pred-x_true): norm={torch.norm(x_pred-x_true).item():.6e}")
+                    print(f"    正規化パラメータ: x_mean={x_mean_t.item():.6e}, x_std={x_std_t.item():.6e}")
 
         # プロットを更新
         if ENABLE_PLOT and (epoch % PLOT_INTERVAL == 0 or epoch == NUM_EPOCHS):
