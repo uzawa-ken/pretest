@@ -2,14 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-GNN training on 5 cases with data loss + mesh-quality-weighted PDE (global residual) loss.
+GNN training on 5 cases with relative error-based data loss + PDE loss.
 
-- Uses the same feature/target normalization scheme as single_case_gnn_data_only.py.
-- Cases are specified by TIME_LIST and RANK.
-- PDE loss is based on the mesh-quality–weighted global residual of A x_pred - b,
-  while we still monitor the unweighted R_pred = ||A x_pred - b|| / ||b|| for logging.
+損失関数:
+  - データ損失: L_data = ||x_pred - x_true||² / ||x_true||²
+  - PDE損失:    L_pde  = ||A·x_pred - b||² / ||b||²
+  - 総合損失:   L = λ_data × L_data + λ_pde × L_pde
 
-Adjust LAMBDA_PDE, LAMBDA_DATA, ALPHA_QUAL などを調整して実験してください。
+両方の損失が相対誤差（無次元）なので、λ_data = λ_pde = 1.0 で平等に扱えます。
+
+設定パラメータ:
+  - LAMBDA_DATA, LAMBDA_PDE: 損失の重み（デフォルト: 1.0）
+  - USE_MESH_QUALITY_WEIGHT: メッシュ品質重み付けを使用するか（デフォルト: False）
+  - ALPHA_QUAL, BETA_QUAL: メッシュ品質重み付けのパラメータ
 """
 
 import os
@@ -38,11 +43,12 @@ NUM_EPOCHS = 1000
 LR         = 1e-3
 WEIGHT_DECAY = 1e-5
 
-# DATA ロスの重み（ベースライン）
-LAMBDA_DATA = 0.1    # ← ここを 1.0 → 0.3 → 0.1 → 0 に変えて試す
+# 損失関数の重み（両方とも相対誤差なので同じスケール）
+LAMBDA_DATA = 1.0    # データ損失の重み ||x_pred - x_true||² / ||x_true||²
+LAMBDA_PDE  = 1.0    # PDE損失の重み ||A·x_pred - b||² / ||b||²
 
-# PDE ロスの重み
-LAMBDA_PDE = 1e-4
+# メッシュ品質重み付けを使用するかどうか
+USE_MESH_QUALITY_WEIGHT = False  # True: 品質の悪いセルを重視, False: 全セル均等
 
 # ------------------------------------------------------------
 # メッシュ品質ベース PDE 重み付けの設定
@@ -312,48 +318,61 @@ def matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x):
 # メッシュ品質重み付き PDE loss を計算するユーティリティ
 # ------------------------------------------------------------
 
-def compute_weighted_pde_loss(case, x_pred, eps=1e-12):
-    """1 ケース分のメッシュ品質重み付き PDE loss と、
-    ログ用の非重み付き R_pred を返す。
+def compute_pde_loss(case, x_pred, use_mesh_quality_weight=False, eps=1e-12):
+    """1 ケース分の PDE loss（相対残差）を計算する。
 
-    case:
-        - b, row_ptr, col_ind, vals, row_idx, w_pde を含む dict
-    x_pred:
-        - (N,) 物理空間の圧力予測
+    損失関数:
+        L_pde = ||A·x_pred - b||² / ||b||²  (use_mesh_quality_weight=False)
+        L_pde = ||r||²_w / ||b||²_w         (use_mesh_quality_weight=True)
+
+    Args:
+        case: b, row_ptr, col_ind, vals, row_idx, w_pde を含む dict
+        x_pred: (N,) 物理空間の圧力予測
+        use_mesh_quality_weight: メッシュ品質重み付けを使用するか
+        eps: ゼロ除算を防ぐための小さな値
+
+    Returns:
+        pde_loss: PDE損失（相対残差の二乗）
+        R_pred: ログ用の相対残差 ||r|| / ||b||
     """
     b       = case["b"]
     row_ptr = case["row_ptr"]
     col_ind = case["col_ind"]
     vals    = case["vals"]
     row_idx = case["row_idx"]
-    w_pde   = case["w_pde"]
 
-    # PDE 残差 r = A x_pred - b
+    # PDE 残差 r = A·x_pred - b
     Ax = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_pred)
     r  = Ax - b
 
-    # 非重み付き R_pred（ログ用）
+    # 相対残差（ログ用）
     norm_r = torch.norm(r)
     norm_b = torch.norm(b)
     R_pred = norm_r / (norm_b + eps)
 
-    # 重み付き PDE loss
-    #   L_pde = ||r||_{w}^2 / ||b||_{w}^2
-    #        = sum_i w_i r_i^2 / sum_i w_i b_i^2
-    r2 = r * r
-    b2 = b * b
-    weighted_r2 = (w_pde * r2).sum()
-    weighted_b2 = (w_pde * b2).sum()
-    pde_loss = weighted_r2 / (weighted_b2 + eps)
+    if use_mesh_quality_weight:
+        # メッシュ品質重み付き PDE loss
+        #   L_pde = ||r||²_w / ||b||²_w
+        #        = (Σᵢ wᵢ·rᵢ²) / (Σᵢ wᵢ·bᵢ²)
+        w_pde = case["w_pde"]
+        r2 = r * r
+        b2 = b * b
+        weighted_r2 = (w_pde * r2).sum()
+        weighted_b2 = (w_pde * b2).sum()
+        pde_loss = weighted_r2 / (weighted_b2 + eps)
+    else:
+        # 通常の相対残差の二乗
+        #   L_pde = ||r||² / ||b||²
+        pde_loss = (norm_r * norm_r) / (norm_b * norm_b + eps)
 
     return pde_loss, R_pred
 
 
 # ------------------------------------------------------------
-# メイン: 5 ケース + data loss + mesh-quality-weighted PDE loss
+# メイン: 5 ケース + 相対誤差ベースの data loss + PDE loss
 # ------------------------------------------------------------
 
-def train_gnn_5cases_pde_weighted(data_dir: str):
+def train_gnn_5cases_relative_loss(data_dir: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
 
@@ -457,9 +476,9 @@ def train_gnn_5cases_pde_weighted(data_dir: str):
     # ---------- モデル定義 ----------
     model = SimpleSAGE(in_channels=nFeat, hidden_channels=64, num_layers=4).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    criterion_data = nn.MSELoss()
 
-    print("=== Training start (data loss + weighted PDE loss, 5 cases) ===")
+    loss_type = "with mesh quality weight" if USE_MESH_QUALITY_WEIGHT else "relative error"
+    print(f"=== Training start (data loss + PDE loss [{loss_type}], 5 cases) ===")
 
     # ---------- 学習ループ ----------
     for epoch in range(1, NUM_EPOCHS + 1):
@@ -479,13 +498,17 @@ def train_gnn_5cases_pde_weighted(data_dir: str):
 
             # --- forward ---
             x_pred_norm = model(feats, edge_index)
-            data_loss_case = criterion_data(x_pred_norm, x_true_norm)
 
             # 物理空間に戻す
             x_pred = x_pred_norm * x_std_t + x_mean_t  # (N,)
 
-            # PDE loss（メッシュ品質重み付き）
-            pde_loss_case, R_pred_case = compute_weighted_pde_loss(cs, x_pred)
+            # データ損失（物理空間での相対誤差）
+            #   L_data = ||x_pred - x_true||² / ||x_true||²
+            diff = x_pred - x_true
+            data_loss_case = torch.sum(diff * diff) / (torch.sum(x_true * x_true) + 1e-12)
+
+            # PDE損失（相対残差）
+            pde_loss_case, R_pred_case = compute_pde_loss(cs, x_pred, USE_MESH_QUALITY_WEIGHT)
 
             total_data_loss = total_data_loss + data_loss_case
             total_pde_loss  = total_pde_loss  + pde_loss_case
@@ -514,7 +537,7 @@ def train_gnn_5cases_pde_weighted(data_dir: str):
             )
 
     # ---------- 最終評価 & x_pred 書き出し ----------
-    print("\n=== Final diagnostics per case (GNN, data + weighted PDE loss) ===")
+    print(f"\n=== Final diagnostics per case (GNN, relative error loss [{loss_type}]) ===")
     model.eval()
     for cs in cases:
         time_str   = cs["time"]
@@ -555,5 +578,5 @@ def train_gnn_5cases_pde_weighted(data_dir: str):
 
 
 if __name__ == "__main__":
-    train_gnn_5cases_pde_weighted(DATA_DIR)
+    train_gnn_5cases_relative_loss(DATA_DIR)
 
