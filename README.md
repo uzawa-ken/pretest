@@ -23,18 +23,19 @@
 - PyTorch
 - PyTorch Geometric
 - NumPy
+- Matplotlib（可視化用）
 
 ### インストール
 
 ```bash
-pip install torch numpy
+pip install torch numpy matplotlib
 pip install torch-geometric
 ```
 
 または、Conda環境の場合:
 
 ```bash
-conda install pytorch numpy -c pytorch
+conda install pytorch numpy matplotlib -c pytorch
 conda install pyg -c pyg
 ```
 
@@ -115,6 +116,11 @@ RANK_STR   = "0"                                          # ランク番号
 NUM_EPOCHS = 1000       # エポック数
 LR         = 1e-3       # 学習率
 WEIGHT_DECAY = 1e-5     # 重み減衰
+
+# 可視化設定
+ENABLE_PLOT = True      # 学習曲線をプロットするか
+PLOT_INTERVAL = 50      # プロット更新の間隔（エポック数）
+SAVE_PLOT_PATH = "./training_history.png"  # プロット保存先
 
 # 損失関数の重み（両方とも相対誤差なので同じスケール）
 LAMBDA_DATA = 1.0       # データ損失の重み
@@ -244,18 +250,36 @@ x_normalized = (x - x_mean) / x_std
 - `loss`: 総合損失
 - `data_loss`: データ損失成分
 - `PDE_loss`: PDE損失成分
-- `rel_err(avg)`: 平均相対誤差 `||x_pred - x_true|| / ||x_true||`
+- `rel_err(avg)`: 平均相対誤差 `||x_pred - x_true|| / ||x_true||` **（圧力予測誤差）**
 - `R_pred(avg)`: 平均PDE残差 `||A·x_pred - b|| / ||b||`
+
+**重要**: `rel_err(avg)` が**圧力の真値と予測値のずれ**を表します。この値が小さいほど、GNNの予測精度が高いことを意味します。
 
 ### 最終出力ファイル
 
-学習終了後、各ケースの予測値が以下のファイルに保存されます:
+学習終了後、以下のファイルが生成されます:
+
+#### 1. 予測値ファイル
+
+各ケースの予測値:
 
 ```
 ./gnn/x_pred_{time}_rank{rank}.dat
 ```
 
 各行の形式: `cell_id predicted_pressure`
+
+#### 2. 学習曲線のプロット
+
+```
+./training_history.png
+```
+
+4つのサブプロットを含む画像ファイル：
+- 総合損失の推移
+- データ損失とPDE損失の比較
+- 圧力予測誤差（相対誤差）の推移
+- PDE相対残差の推移
 
 ## 実験のヒント
 
@@ -305,6 +329,137 @@ model = SimpleSAGE(
     num_layers=4          # GraphSAGE層の数
 )
 ```
+
+## 精度向上のための改善策
+
+現在の学習結果（1000エポック後）で `rel_err ≈ 59%` の場合、以下の改善策を検討してください：
+
+### 1. **学習エポック数を増やす**
+
+学習曲線が収束していない場合は、エポック数を増やします：
+
+```python
+NUM_EPOCHS = 2000  # または 3000, 5000
+```
+
+**確認方法**: 学習曲線（`training_history.png`）を見て、損失が下がり続けているか確認
+
+### 2. **モデルの表現力を向上させる**
+
+#### オプション A: 隠れ層のチャネル数を増やす
+
+```python
+model = SimpleSAGE(
+    in_channels=nFeat,
+    hidden_channels=128,  # 64 → 128 に増やす
+    num_layers=4
+)
+```
+
+#### オプション B: 層の数を増やす
+
+```python
+model = SimpleSAGE(
+    in_channels=nFeat,
+    hidden_channels=64,
+    num_layers=6  # 4 → 6 に増やす
+)
+```
+
+**注意**: モデルが大きくなると過学習のリスクも増えます
+
+### 3. **学習率の調整**
+
+#### 学習率を下げる（細かい調整）
+
+```python
+LR = 5e-4  # 1e-3 → 5e-4
+```
+
+#### 学習率スケジューラを使用
+
+```python
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='min', factor=0.5, patience=100, verbose=True
+)
+```
+
+学習ループ内で：
+```python
+scheduler.step(loss)
+```
+
+### 4. **損失の重みを調整**
+
+データ損失を重視する：
+
+```python
+LAMBDA_DATA = 2.0  # データへの適合を強化
+LAMBDA_PDE  = 1.0
+```
+
+### 5. **正規化の改善**
+
+重み減衰を調整：
+
+```python
+WEIGHT_DECAY = 1e-6  # 1e-5 → 1e-6（正則化を弱める）
+```
+
+または、Dropout層を追加（コード修正が必要）。
+
+### 6. **バッチ正規化やLayer Normalizationの追加**
+
+SimpleSAGEモデルに正規化層を追加（コード修正が必要）。
+
+### 7. **メッシュ品質重み付けを有効化**
+
+品質の悪いセルに注力：
+
+```python
+USE_MESH_QUALITY_WEIGHT = True
+ALPHA_QUAL = 4.0
+```
+
+### 8. **データの確認**
+
+- 真値 `x_true` の範囲を確認
+- 特徴量に異常値がないか確認
+- 正規化が適切か確認
+
+### 9. **可視化による診断**
+
+`training_history.png` を確認：
+
+- **損失が下がり続けている** → エポック数を増やす
+- **損失が振動している** → 学習率を下げる
+- **data_loss と pde_loss の差が大きい** → 重みを調整
+- **早期に収束している** → モデルを大きくする
+
+### 推奨される改善の順序
+
+1. まず**エポック数を2000に増やす**（最も簡単）
+2. それでも改善しない場合、**hidden_channels=128**に増やす
+3. さらに必要なら**学習率を5e-4に下げる**
+4. 最後に**損失の重み**を調整
+
+## 可視化
+
+### 学習曲線のプロット
+
+`ENABLE_PLOT = True` に設定すると、学習中に自動的に学習曲線がプロットされます：
+
+```python
+ENABLE_PLOT = True       # 学習曲線をプロットするか
+PLOT_INTERVAL = 50       # プロット更新の間隔（エポック数）
+SAVE_PLOT_PATH = "./training_history.png"  # プロット保存先
+```
+
+プロットには以下が含まれます：
+- **Total Loss**: 総合損失の推移
+- **Data Loss vs PDE Loss**: 各損失成分の推移
+- **Relative Error**: 圧力予測誤差 `||x_pred - x_true|| / ||x_true||`
+- **PDE Residual**: PDE相対残差 `||A·x_pred - b|| / ||b||`
 
 ## 技術的な詳細
 
