@@ -587,7 +587,9 @@ def train_gnn_5cases_relative_loss(data_dir: str):
     # ---------- リアルタイム表示の初期化 ----------
     fig_rt = None
     axes_rt = None
-    if ENABLE_PLOT and ENABLE_REALTIME_PLOT:
+    realtime_plot = ENABLE_REALTIME_PLOT  # ローカル変数にコピー
+
+    if ENABLE_PLOT and realtime_plot:
         try:
             # インタラクティブバックエンドを試す
             matplotlib.use('TkAgg')  # または 'Qt5Agg', 'GTK3Agg'
@@ -596,8 +598,8 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         except Exception as e:
             print(f"[WARNING] リアルタイム表示を初期化できませんでした: {e}")
             print("[INFO] ファイル保存のみで続行します")
-            ENABLE_REALTIME_PLOT = False
-    elif not ENABLE_REALTIME_PLOT:
+            realtime_plot = False
+    elif not realtime_plot:
         # 非インタラクティブバックエンド
         matplotlib.use('Agg')
 
@@ -668,7 +670,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
 
         # プロットを更新
         if ENABLE_PLOT and (epoch % PLOT_INTERVAL == 0 or epoch == NUM_EPOCHS):
-            if ENABLE_REALTIME_PLOT:
+            if realtime_plot:
                 # リアルタイム表示モード
                 fig_rt, axes_rt = plot_training_history(
                     history, SAVE_PLOT_PATH,
@@ -719,7 +721,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         print(f"    [INFO] x_pred を {out_path} に書き出しました。")
 
     # ---------- リアルタイム表示の終了処理 ----------
-    if ENABLE_PLOT and ENABLE_REALTIME_PLOT:
+    if ENABLE_PLOT and realtime_plot:
         print("\n[INFO] 学習完了。GUIウィンドウを閉じるには、ウィンドウの×ボタンを押してください。")
         print("[INFO] または、Ctrl+Cで終了してください。")
         try:
