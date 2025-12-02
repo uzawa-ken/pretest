@@ -648,6 +648,7 @@ def train_gnn_5cases_relative_loss(data_dir: str):
         history['R_pred'].append(avg_R_pred)
         history['rmse'].append(avg_rmse)
 
+
         if epoch % 50 == 0 or epoch == 1:
             print(
                 f"[Epoch {epoch:5d}] loss={loss.item():.4e}, "
@@ -658,106 +659,71 @@ def train_gnn_5cases_relative_loss(data_dir: str):
                 f"R_pred(avg)={avg_R_pred:.4e}"
             )
 
-            # 診断情報（最初と50エポック目のみ）
-            if epoch == 1 or epoch == 50:
-                with torch.no_grad():
-                    cs = cases[0]  # 最初のケースで診断
-                    feats = cs["feats"]
-                    edge_index = cs["edge_index"]
-                    x_true = cs["x_true"]
-
-                    x_pred_norm = model(feats, edge_index)
-                    x_pred = x_pred_norm * x_std_t + x_mean_t
-
-                    print(f"  [診断 Epoch {epoch}]")
-                    print(f"    x_true: min={x_true.min().item():.6e}, max={x_true.max().item():.6e}, "
-                          f"mean={x_true.mean().item():.6e}, norm={torch.norm(x_true).item():.6e}")
-                    print(f"    x_pred: min={x_pred.min().item():.6e}, max={x_pred.max().item():.6e}, "
-                          f"mean={x_pred.mean().item():.6e}, norm={torch.norm(x_pred).item():.6e}")
-                    print(f"    x_pred_norm: min={x_pred_norm.min().item():.6e}, max={x_pred_norm.max().item():.6e}, "
-                          f"mean={x_pred_norm.mean().item():.6e}")
-                    print(f"    diff (x_pred-x_true): norm={torch.norm(x_pred-x_true).item():.6e}")
-                    print(f"    正規化パラメータ: x_mean={x_mean_t.item():.6e}, x_std={x_std_t.item():.6e}")
-
-        # プロットを更新
-        if ENABLE_PLOT and (epoch % PLOT_INTERVAL == 0 or epoch == NUM_EPOCHS):
-            plot_training_history(history, SAVE_PLOT_PATH)
-
-        # ---------- 最終評価 & x_pred 書き出し ----------
-        print(f"\n=== Final diagnostics per case (GNN, relative error loss [{loss_type}]) ===")
-        model.eval()
-        for cs in cases:
-            time_str   = cs["time"]
-            feats      = cs["feats"]
-            edge_index = cs["edge_index"]
-            x_true     = cs["x_true"]
-            b          = cs["b"]
-            row_ptr    = cs["row_ptr"]
-            col_ind    = cs["col_ind"]
-            vals       = cs["vals"]
-            row_idx    = cs["row_idx"]
-
+            # 診断情報 + OpenFOAM との PDE 残差比較（代表として最初のケース）
             with torch.no_grad():
+                cs0 = cases[0]  # 最初のケースで診断・比較
+                feats0      = cs0["feats"]
+                edge_index0 = cs0["edge_index"]
+                x_true0     = cs0["x_true"]
+                b0          = cs0["b"]
+                row_ptr0    = cs0["row_ptr"]
+                col_ind0    = cs0["col_ind"]
+                vals0       = cs0["vals"]
+                row_idx0    = cs0["row_idx"]
+
                 # --- GNN 予測 ---
-                x_pred_norm = model(feats, edge_index)
-                x_pred = x_pred_norm * x_std_t + x_mean_t  # 物理空間に戻す
-                diff = x_pred - x_true
-                N = x_true.shape[0]
-    
-                # 相対誤差 (GNN vs OpenFOAM 解)
-                rel_err = torch.norm(diff) / (torch.norm(x_true) + EPS_RES)
-    
-                # RMSE
-                rmse = torch.sqrt(torch.sum(diff * diff) / N)
-    
-                # ---------- PDE 残差 (GNN 解 x_pred) ----------
-                Ax_pred = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_pred)
-                r_pred  = Ax_pred - b
-    
-                norm_r_pred     = torch.norm(r_pred)                    # ||r||_2
-                max_abs_r_pred  = torch.max(torch.abs(r_pred))          # max|r_i|
-                norm_b          = torch.norm(b)                         # ||b||
-                norm_Ax_pred    = torch.norm(Ax_pred)                   # ||Ax||
-    
-                R_pred_over_b   = norm_r_pred / (norm_b + EPS_RES)      # ||r||/||b||
-                R_pred_over_Ax  = norm_r_pred / (norm_Ax_pred + EPS_RES)  # ||r||/||Ax||
-    
-                # ---------- PDE 残差 (OpenFOAM 解 x_true) ----------
-                Ax_true = matvec_csr_torch(row_ptr, col_ind, vals, row_idx, x_true)
-                r_true  = Ax_true - b
-    
-                norm_r_true     = torch.norm(r_true)                    # ||r||_2
-                max_abs_r_true  = torch.max(torch.abs(r_true))          # max|r_i|
-                norm_Ax_true    = torch.norm(Ax_true)                   # ||Ax||    
+                x_pred_norm0 = model(feats0, edge_index0)
+                x_pred0 = x_pred_norm0 * x_std_t + x_mean_t
 
-                R_true_over_b   = norm_r_true / (norm_b + EPS_RES)      # ||r||/||b||
-                R_true_over_Ax  = norm_r_true / (norm_Ax_true + EPS_RES)  # ||r||/||Ax||
+                print(f"  [診断 Epoch {epoch}] (Case time={cs0['time']})")
+                print(f"    x_true: min={x_true0.min().item():.6e}, max={x_true0.max().item():.6e}, "
+                      f"mean={x_true0.mean().item():.6e}, norm={torch.norm(x_true0).item():.6e}")
+                print(f"    x_pred: min={x_pred0.min().item():.6e}, max={x_pred0.max().item():.6e}, "
+                      f"mean={x_pred0.mean().item():.6e}, norm={torch.norm(x_pred0).item():.6e}")
+                print(f"    x_pred_norm: min={x_pred_norm0.min().item():.6e}, max={x_pred_norm0.max().item():.6e}, "
+                      f"mean={x_pred_norm0.mean().item():.6e}")
+                print(f"    diff (x_pred-x_true): norm={torch.norm(x_pred0-x_true0).item():.6e}")
+                print(f"    正規化パラメータ: x_mean={x_mean_t.item():.6e}, x_std={x_std_t.item():.6e}")
 
-            # --- 結果出力 ---
-            print(f"  Case (time={time_str}, rank={RANK_STR}):")
-            print(f"    [GNN] rel_err = {rel_err.item():.4e}, RMSE = {rmse.item():.4e}")
-            print(
-                "          pEqn true(Ax-b) via residual() (GNN): "
-                f"||r||_2={norm_r_pred.item():.6e}, "
-                f"max|r_i|={max_abs_r_pred.item():.6e}, "
-                f"||r||/||b||={R_pred_over_b.item():.5f}, "
-                f"||r||/||Ax||={R_pred_over_Ax.item():.5f}"
-            )
-            print(
-                "    [OpenFOAM x_true] pEqn true(Ax-b) via residual(): "
-                f"||r||_2={norm_r_true.item():.6e}, "
-                f"max|r_i|={max_abs_r_true.item():.6e}, "
-                f"||r||/||b||={R_true_over_b.item():.5f}, "
-                f"||r||/||Ax||={R_true_over_Ax.item():.5f}"
-            )
+                # ---------- PDE 残差 (GNN 解 x_pred0) ----------
+                Ax_pred0 = matvec_csr_torch(row_ptr0, col_ind0, vals0, row_idx0, x_pred0)
+                r_pred0  = Ax_pred0 - b0
 
-            # x_pred をファイル出力
-            x_pred_np = x_pred.cpu().numpy().reshape(-1)
-            out_path = os.path.join(DATA_DIR, f"x_pred_{time_str}_rank{RANK_STR}.dat")
-            with open(out_path, "w") as f:
-                for i, val in enumerate(x_pred_np):
-                    f.write(f"{i} {val:.9e}\n")
-            print(f"    [INFO] x_pred を {out_path} に書き出しました。")
+                norm_r_pred0    = torch.norm(r_pred0)                    # ||r||_2
+                max_abs_r_pred0 = torch.max(torch.abs(r_pred0))          # max|r_i|
+                norm_b0         = torch.norm(b0)                         # ||b||
+                norm_Ax_pred0   = torch.norm(Ax_pred0)                   # ||Ax||
+
+                R_pred_over_b0  = norm_r_pred0 / (norm_b0 + EPS_RES)     # ||r||/||b||
+                R_pred_over_Ax0 = norm_r_pred0 / (norm_Ax_pred0 + EPS_RES)  # ||r||/||Ax||
+
+                # ---------- PDE 残差 (OpenFOAM 解 x_true0) ----------
+                Ax_true0 = matvec_csr_torch(row_ptr0, col_ind0, vals0, row_idx0, x_true0)
+                r_true0  = Ax_true0 - b0
+
+                norm_r_true0    = torch.norm(r_true0)                    # ||r||_2
+                max_abs_r_true0 = torch.max(torch.abs(r_true0))          # max|r_i|
+                norm_Ax_true0   = torch.norm(Ax_true0)                   # ||Ax||
+
+                R_true_over_b0  = norm_r_true0 / (norm_b0 + EPS_RES)     # ||r||/||b||
+                R_true_over_Ax0 = norm_r_true0 / (norm_Ax_true0 + EPS_RES)  # ||r||/||Ax||
+
+                # --- PDE 残差比較の出力（OpenFOAM のログ形式に揃える） ---
+                print("    [PDE residual comparison vs OpenFOAM (case0)]")
+                print(
+                    "      GNN : "
+                    f"||r||_2={norm_r_pred0.item():.6e}, "
+                    f"max|r_i|={max_abs_r_pred0.item():.6e}, "
+                    f"||r||/||b||={R_pred_over_b0.item():.5f}, "
+                    f"||r||/||Ax||={R_pred_over_Ax0.item():.5f}"
+                )
+                print(
+                    "      OF  : "
+                    f"||r||_2={norm_r_true0.item():.6e}, "
+                    f"max|r_i|={max_abs_r_true0.item():.6e}, "
+                    f"||r||/||b||={R_true_over_b0.item():.5f}, "
+                    f"||r||/||Ax||={R_true_over_Ax0.item():.5f}"
+                )
 
 if __name__ == "__main__":
     train_gnn_5cases_relative_loss(DATA_DIR)
