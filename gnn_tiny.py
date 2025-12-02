@@ -590,15 +590,42 @@ def train_gnn_5cases_relative_loss(data_dir: str):
     realtime_plot = ENABLE_REALTIME_PLOT  # ローカル変数にコピー
 
     if ENABLE_PLOT and realtime_plot:
-        try:
-            # インタラクティブバックエンドを試す
-            matplotlib.use('TkAgg')  # または 'Qt5Agg', 'GTK3Agg'
-            plt.ion()  # インタラクティブモードON
-            print("[INFO] リアルタイム可視化を有効にしました（GUIウィンドウが開きます）")
-        except Exception as e:
-            print(f"[WARNING] リアルタイム表示を初期化できませんでした: {e}")
+        # 複数のバックエンドを試す
+        backends_to_try = [
+            ('TkAgg', 'Tkinter GUI'),
+            ('Qt5Agg', 'Qt5 GUI'),
+            ('WebAgg', 'ブラウザ'),
+            ('GTK3Agg', 'GTK3 GUI'),
+        ]
+
+        backend_initialized = False
+        for backend_name, description in backends_to_try:
+            try:
+                matplotlib.use(backend_name)
+                plt.ion()  # インタラクティブモードON
+
+                # テスト用に小さなfigureを作成してみる
+                test_fig = plt.figure()
+                plt.close(test_fig)
+
+                print(f"[INFO] リアルタイム可視化を有効にしました（{description}を使用）")
+                if backend_name == 'WebAgg':
+                    print("[INFO] ブラウザで表示されます。URLが表示されたらブラウザでアクセスしてください。")
+                    print("[INFO] SSH経由の場合: ssh -L 8988:localhost:8988 user@host でポートフォワーディングしてください")
+                backend_initialized = True
+                break
+            except Exception as e:
+                # このバックエンドは使えないので次を試す
+                continue
+
+        if not backend_initialized:
+            print(f"[WARNING] リアルタイム表示を初期化できませんでした")
+            print("[INFO] 以下のいずれかをインストールすると、リアルタイム表示が可能になります:")
+            print("  - sudo apt-get install python3-tk  (Tkinter)")
+            print("  - pip install PyQt5  (Qt5)")
             print("[INFO] ファイル保存のみで続行します")
             realtime_plot = False
+            matplotlib.use('Agg')
     elif not realtime_plot:
         # 非インタラクティブバックエンド
         matplotlib.use('Agg')
